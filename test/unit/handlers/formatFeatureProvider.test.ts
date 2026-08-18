@@ -722,3 +722,56 @@ suite('formatFeatureProvider - edge cases', () => {
   });
 
 });
+
+// these guard the scaling of the core, not its absolute speed - a run of lines the
+// formatter can't classify (comments, tags, description prose) used to make it borrow a
+// level by scanning down from each one, which cost O(n^2): a feature file with a few
+// thousand commented-out lines took seconds to format on save.
+suite('formatFeatureProvider - scaling', () => {
+
+  // deliberately loose - the quadratic version took ~3.7s for this input, and the linear
+  // one takes single-digit ms, so a slow CI machine can be an order of magnitude out and
+  // this still tells us which one we have
+  const BUDGET_MS = 750;
+
+  function timeFormat(input: string[]): number {
+    const started = Date.now();
+    formatFeatureLines(input, opts());
+    return Date.now() - started;
+  }
+
+  test('a long run of comment lines does not blow up', () => {
+    const input = ["Feature: big", "Scenario: s", "Given a step"];
+    for (let i = 0; i < 6000; i++)
+      input.push(`#   Given a commented out step ${i}`);
+    const elapsed = timeFormat(input);
+    assert.ok(elapsed < BUDGET_MS, `${input.length} commented lines took ${elapsed}ms`);
+  });
+
+  test('a long run of description prose does not blow up', () => {
+    const input = ["Feature: big"];
+    for (let i = 0; i < 6000; i++)
+      input.push(`  free form description line ${i}`);
+    input.push("Scenario: s", "Given a step");
+    const elapsed = timeFormat(input);
+    assert.ok(elapsed < BUDGET_MS, `${input.length} prose lines took ${elapsed}ms`);
+  });
+
+  test('a long docstring does not blow up', () => {
+    const input = ["Feature: big", "Scenario: s", "Given a payload", '"""'];
+    for (let i = 0; i < 6000; i++)
+      input.push(`  payload line ${i}`);
+    input.push('"""');
+    const elapsed = timeFormat(input);
+    assert.ok(elapsed < BUDGET_MS, `${input.length} docstring lines took ${elapsed}ms`);
+  });
+
+  test('a large feature file of ordinary gherkin does not blow up', () => {
+    const input = ["Feature: big"];
+    for (let i = 0; i < 2000; i++)
+      input.push("", `@tag${i}`, `# scenario ${i}`, `Scenario: s${i}`, "Given a", "When b", "Then c");
+    const elapsed = timeFormat(input);
+    assert.ok(elapsed < BUDGET_MS, `${input.length} lines took ${elapsed}ms`);
+  });
+
+});
