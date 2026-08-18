@@ -11,10 +11,14 @@ const zeroIndent = /^$|^\s*$|^\s*Feature:.*/;
 const oneIndent = /^\s*(Background:|Rule:|Scenario:|Scenario Outline:|Scenario Template:).*/;
 const twoIndent = /^\s*(Given|When|Then|And|But|Examples:).*/;
 const threeIndent = /^\s*\|.*/;
-const allIndents = [oneIndent, twoIndent, threeIndent].map(r => r.source).join("|");
+const allIndents = new RegExp([oneIndent, twoIndent, threeIndent].map(r => r.source).join("|"));
 
 // both delimiters are valid docstring fences per the gherkin spec
 const docstringDelimiters = ['"""', '```'];
+
+
+// a format taking longer than this is worth a line in the output channel on its own
+const SLOW_FORMAT_MS = 250;
 
 
 // ============================================================================
@@ -50,7 +54,7 @@ export function formatFeatureLines(lines: string[], opts: FormatOpts): LineEdit[
   const edits: LineEdit[] = [];
   const lineCount = lines.length;
 
-  const { isFence, isBody } = findDocstrings(lines);
+  const { isFence, isBody, fenceOf } = findDocstrings(lines);
   const levels = computeLevels(lines, isFence, isBody);
   const alignedRows = opts.alignTables ? alignTables(lines, isFence, isBody) : new Map<number, string>();
 
@@ -76,7 +80,7 @@ export function formatFeatureLines(lines: string[], opts: FormatOpts): LineEdit[
     // otherwise leave it exactly as it is (no keyword matching, no blank line
     // insertion, no trailing whitespace trimming).
     if (isBody[lineNo]) {
-      const shifted = shiftBodyLine(lines, lineNo, isFence, levels, opts);
+      const shifted = shiftBodyLine(lines, lineNo, fenceOf[lineNo], levels, opts);
       if (shifted !== undefined && shifted !== line)
         edits.push({ startLine: lineNo, startChar: 0, endLine: lineNo, endChar: line.length, newText: shifted });
       continue;
@@ -143,11 +147,16 @@ function endOfFileEdits(lines: string[], lastContent: number, opts: FormatOpts):
 // locate gherkin docstrings. isFence marks the fence lines themselves, isBody marks the
 // content between them. an unterminated docstring leaves the remainder of the file
 // marked as body, which is the safe failure mode - we won't touch it.
-function findDocstrings(lines: string[]): { isFence: boolean[], isBody: boolean[] } {
+function findDocstrings(lines: string[]): { isFence: boolean[], isBody: boolean[], fenceOf: Int32Array } {
 
   const isFence = new Array<boolean>(lines.length).fill(false);
   const isBody = new Array<boolean>(lines.length).fill(false);
+  // the opening fence of each body line (-1 for a line that isn't body). recorded here so
+  // that shiftBodyLine doesn't have to scan back for it - that scan made a long docstring
+  // cost O(n^2).
+  const fenceOf = new Int32Array(lines.length).fill(-1);
   let openDelimiter: string | undefined;
+  let openFence = -1;
 
   for (let lineNo = 0; lineNo < lines.length; lineNo++) {
     const trimmed = lines[lineNo].trim();
@@ -157,6 +166,7 @@ function findDocstrings(lines: string[]): { isFence: boolean[], isBody: boolean[
       if (delimiter) {
         isFence[lineNo] = true;
         openDelimiter = delimiter;
+        openFence = lineNo;
       }
     }
     else if (delimiter === openDelimiter) {
@@ -165,16 +175,18 @@ function findDocstrings(lines: string[]): { isFence: boolean[], isBody: boolean[
     }
     else {
       isBody[lineNo] = true;
+      fenceOf[lineNo] = openFence;
     }
   }
 
-  return { isFence, isBody };
+  return { isFence, isBody, fenceOf };
 }
 
 
 function computeLevels(lines: string[], isFence: boolean[], isBody: boolean[]): number[] {
 
   const levels = new Array<number>(lines.length).fill(0);
+  const nextLevels = computeNextLevels(lines, isFence, isBody);
   let featFound = false;
   let current = 0;
   let openFenceLevel: number | undefined;
@@ -211,7 +223,7 @@ function computeLevels(lines: string[], isFence: boolean[], isBody: boolean[]): 
     const classified = classifyLevel(trimmed);
     // unmatched, so must be a comment line, or a tag line - borrow the level of the
     // next line we can classify, and failing that keep the level we are already at
-    current = classified !== undefined ? classified : (nextLevel(lines, lineNo, isFence, isBody) ?? current);
+    current = classified !== undefined ? classified : (nextLevels[lineNo] ?? current);
     levels[lineNo] = current;
   }
 
@@ -232,27 +244,35 @@ function classifyLevel(trimmed: string): number | undefined {
 }
 
 
-function nextLevel(lines: string[], from: number, isFence: boolean[], isBody: boolean[]): number | undefined {
-  for (let lineNo = from + 1; lineNo < lines.length; lineNo++) {
+// for each line, the level of the nearest line below it that we can classify (undefined if
+// there is none). comments, tags and free-form description lines borrow their level from
+// below, and scanning down for each of them separately cost O(n^2) over a run of them - a
+// few thousand consecutive commented-out lines took seconds.
+function computeNextLevels(lines: string[], isFence: boolean[], isBody: boolean[]): (number | undefined)[] {
+
+  const nextLevels = new Array<number | undefined>(lines.length).fill(undefined);
+  let pending: number | undefined;
+
+  for (let lineNo = lines.length - 1; lineNo >= 0; lineNo--) {
+    // assign before classifying this line - a line borrows from *below* it, never itself
+    nextLevels[lineNo] = pending;
     // docstring content only looks like gherkin - never borrow a level from it
     if (isBody[lineNo] || isFence[lineNo])
       continue;
     const trimmed = lines[lineNo].trim();
-    if (trimmed.match(allIndents))
-      return classifyLevel(trimmed);
+    if (allIndents.test(trimmed))
+      pending = classifyLevel(trimmed);
   }
-  return undefined;
+
+  return nextLevels;
 }
 
 
 // re-indent a docstring body line by the same amount its opening fence moved, so that
 // indentation-sensitive payloads (yaml, python, markdown) keep their structure.
-function shiftBodyLine(lines: string[], lineNo: number, isFence: boolean[], levels: number[],
+function shiftBodyLine(lines: string[], lineNo: number, fence: number, levels: number[],
   opts: FormatOpts): string | undefined {
 
-  let fence = lineNo - 1;
-  while (fence >= 0 && !isFence[fence])
-    fence--;
   if (fence < 0)
     return undefined;
 
@@ -318,13 +338,19 @@ function alignTables(lines: string[], isFence: boolean[], isBody: boolean[]): Ma
 
     // note: width is counted in code points, so full width / CJK cells will still be
     // padded by count rather than by rendered width
-    const widths: number[] = [];
-    for (let cell = 0; cell < cellCount; cell++)
-      widths[cell] = Math.max(...rows.map(row => cellWidth(row[cell])));
+    const cellWidths = rows.map(row => row.map(cellWidth));
+    const widths = new Array<number>(cellCount).fill(0);
+    for (const row of cellWidths) {
+      for (let cell = 0; cell < cellCount; cell++) {
+        if (row[cell] > widths[cell])
+          widths[cell] = row[cell];
+      }
+    }
 
     for (let lineNo = start; lineNo <= end; lineNo++) {
       const cells = rows[lineNo - start];
-      const padded = cells.map((cell, i) => cell + " ".repeat(widths[i] - cellWidth(cell)));
+      const rowWidths = cellWidths[lineNo - start];
+      const padded = cells.map((cell, i) => cell + " ".repeat(widths[i] - rowWidths[i]));
       aligned.set(lineNo, "| " + padded.join(" | ") + " |");
     }
   };
@@ -426,13 +452,31 @@ function resolveOpts(document: vscode.TextDocument, options: vscode.FormattingOp
 }
 
 
+// only the most recent full-document result is kept - see the note in format()
+let lastRun: { key: string, edits: LineEdit[] } | undefined;
+
+
 function format(document: vscode.TextDocument, options: vscode.FormattingOptions,
   range?: vscode.Range): vscode.TextEdit[] {
 
   const opts = resolveOpts(document, options);
-  logResolvedOpts(document, options, opts);
 
-  const edits = formatFeatureLines(getLines(document.getText()), opts);
+  // vscode asks the range provider for one range at a time, and editor.formatOnSaveMode
+  // "modifications" can hand us a range per modified region of the document. we always
+  // have to scan the whole document (the indent of a line depends on the lines above it),
+  // so without this we would rescan the whole file once per range. the document version
+  // covers the text, and vscode bumps it on every edit, so a cached result can't outlive
+  // a change to either the content or the resolved options.
+  const key = JSON.stringify([document.uri.toString(), document.version, opts]);
+
+  let edits = lastRun && lastRun.key === key ? lastRun.edits : undefined;
+  if (!edits) {
+    const started = Date.now();
+    const lines = getLines(document.getText());
+    edits = formatFeatureLines(lines, opts);
+    lastRun = { key, edits };
+    logFormatRun(document, options, opts, lines.length, Date.now() - started);
+  }
 
   // honour the requested range. note that the indent state above is still computed from
   // line 0 - we scan the whole document and filter the edits, which is what lets
@@ -488,14 +532,17 @@ function showFormatError(document: vscode.TextDocument, e: unknown): void {
 
 
 // log where the indent unit came from, so that "why did it use tabs?" is answerable from
-// the output channel rather than needing a repro.
-function logResolvedOpts(document: vscode.TextDocument, options: vscode.FormattingOptions,
-  opts: FormatOpts): void {
+// the output channel rather than needing a repro. a slow format gets a line of its own
+// whatever the log level, so that "why was saving so slow?" is answerable the same way.
+function logFormatRun(document: vscode.TextDocument, options: vscode.FormattingOptions,
+  opts: FormatOpts, lineCount: number, elapsedMs: number): void {
   try {
-    if (!config.globalSettings.verboseLogging)
-      return;
     const wkspUri = getWorkspaceUriForFile(document.uri);
     if (!wkspUri)
+      return;
+    if (elapsedMs >= SLOW_FORMAT_MS)
+      config.logger.logInfo(`format feature file: took ${elapsedMs}ms for ${lineCount} lines`, wkspUri);
+    if (!config.globalSettings.verboseLogging)
       return;
     const unit = opts.unit === "\t" ? "1 tab" : `${opts.unit.length} space(s)`;
     config.logger.logInfo(
@@ -504,7 +551,7 @@ function logResolvedOpts(document: vscode.TextDocument, options: vscode.Formatti
       `already account for any [gherkin] override, editor.detectIndentation and .editorconfig. ` +
       `files.trimTrailingWhitespace=${opts.trimTrailing}, files.insertFinalNewline=${opts.insertFinalNewline}, ` +
       `files.trimFinalNewlines=${opts.trimFinalNewlines}, formatBlankLines=${opts.blankLines}, ` +
-      `formatAlignTables=${opts.alignTables}`,
+      `formatAlignTables=${opts.alignTables}, ${lineCount} lines formatted in ${elapsedMs}ms`,
       wkspUri);
   }
   catch {
