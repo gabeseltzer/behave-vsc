@@ -5,6 +5,9 @@ Forked from [jimasp's](https://github.com/jimasp) excellent [behave-vsc](https:/
 Debug and run Python [behave](https://behave.readthedocs.io/) BDD tests using the native Visual Studio Code Test API.  
 Includes two-way step navigation, Gherkin syntax highlighting, autoformatting, autocompletion, and a few basic snippets.
 
+> [!NOTE]
+> This is a vibe-coded project. I use it every day at work and personally test pre-releases before promoting them to real releases. And I write my own release notes. But the code is AI-sloppy. If you're not comfortable with that, then you should look for another extension.
+
 ## Features
 
 ### New in this fork
