@@ -329,7 +329,7 @@
 	"name": "gs-behave-bdd",
 	"displayName": "Behave BDD",
 	"description": "Full language support for Behave feature files. Run and debug tests. Navigate between steps and definitions. Forked from jimasp's behave-vsc",
-	"version": "1.7.0",
+	"version": "1.7.1",
 	"icon": "images/gs-behave-bdd.png",
 	"galleryBanner": {
 		"color": "#2B2B2B",
