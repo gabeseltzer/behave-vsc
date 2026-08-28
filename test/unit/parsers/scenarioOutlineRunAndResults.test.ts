@@ -58,9 +58,9 @@ function makeMockController() {
 
 suite('getScenarioRunName', () => {
 
-  test('normal scenario returns ^name$', () => {
+  test('normal scenario returns ^name\\s*$', () => {
     const pattern = getScenarioRunName('My Scenario', false);
-    assert.strictEqual(pattern, '^My Scenario$');
+    assert.strictEqual(pattern, '^My Scenario\\s*$');
   });
 
   test('outline without params returns ^name -- @', () => {
