@@ -238,6 +238,59 @@ suite('junitParser - example row matching', () => {
       'Must match the <param> outline (passed), not "paramless" (skipped)');
   });
 
+  test('matches example row with fallback logic when junit has different format', async () => {
+    // Real-world scenario from issue: feature with unnamed Examples table
+    // Feature: Test
+    // Scenario Outline: Test With Examples
+    //   Given I am wanting to pass this example
+    //   Examples:
+    //     | Description | test val |
+    //     | Test        | test     |
+    //
+    // Behave generates: "Test With Examples -- @1.1"
+    const xml = makeJunitXml([{
+      classname: 'outline_mixed.Mixed outline',
+      name: 'Test With Examples -- @1.1',
+      status: 'passed',
+    }]);
+    getContentStub.resolves(xml);
+
+    // Queue item with no examples name (unnamed Examples table)
+    const scenario = makeExampleRowScenario('Test With Examples', 1, 1, '', ['Test']);
+    const qi = makeQueueItem(scenario);
+    const { run, results } = makeRun();
+
+    await assert.doesNotReject(
+      () => parseJunitFileAndUpdateTestResults(wkspSettings, run, false, junitUri, [qi]),
+      'Should match even with fallback logic'
+    );
+    assert.strictEqual(results.length, 1, 'Should have one result');
+    assert.strictEqual(results[0].status, 'passed', 'Result should be passed');
+  });
+
+  test('matches example row with trailing space after row index', async () => {
+    // Scenario: junit testcase name has trailing space after row index
+    // "Test With Examples -- @1.5 " (note the space at the end)
+    // This can happen with how behave formats certain test names
+    const xml = makeJunitXml([{
+      classname: 'outline_mixed.Mixed outline',
+      name: 'Test With Examples -- @1.5 ',
+      status: 'passed',
+    }]);
+    getContentStub.resolves(xml);
+
+    const scenario = makeExampleRowScenario('Test With Examples', 1, 5, '', ['Test']);
+    const qi = makeQueueItem(scenario);
+    const { run, results } = makeRun();
+
+    await assert.doesNotReject(
+      () => parseJunitFileAndUpdateTestResults(wkspSettings, run, false, junitUri, [qi]),
+      'Should match row with trailing space using fallback logic'
+    );
+    assert.strictEqual(results.length, 1, 'Should have one result');
+    assert.strictEqual(results[0].status, 'passed', 'Result should be passed');
+  });
+
   test('throws when no junit entry matches the example row suffix', async () => {
     const xml = makeJunitXml([{
       classname: 'outline_mixed.Mixed outline',

@@ -339,15 +339,46 @@ export async function parseJunitFileAndUpdateTestResults(wkspSettings: Workspace
       let outlinePattern = escapeRegex(scenarioName);
       if (scenarioName.includes("<"))
         outlinePattern = outlinePattern.replace(/<[^>]*>/g, ".*");
-      const outlineRx = new RegExp("^" + outlinePattern + "$");
+      const outlineRx = new RegExp("^" + outlinePattern + "\\s*$");
 
-      const queueItemResults = junitContents.testsuite.testcase.filter(tc => {
-        if (tc.$.classname !== className || !tc.$.name.endsWith(rowSuffix))
+      // Build a regex to match the full testcase name with the suffix, allowing trailing whitespace
+      const escapedExName = exName ? escapeRegex(exName) : "";
+      const suffixPattern = exName
+        ? ` -- @${tableIndex}\\.${rowIndex} ${escapedExName}\\s*$`
+        : ` -- @${tableIndex}\\.${rowIndex}\\s*$`;
+      const fullNameRx = new RegExp("^" + outlinePattern + suffixPattern);
+
+      // First, try matching with the expected suffix format
+      let queueItemResults = junitContents.testsuite.testcase.filter(tc => {
+        if (tc.$.classname !== className)
           return false;
-        // Extract the scenario name portion (before " -- @") and match against the outline pattern
-        const jScenName = tc.$.name.substring(0, tc.$.name.lastIndexOf(" -- @"));
+        if (!fullNameRx.test(tc.$.name))
+          return false;
+        const atIdx = tc.$.name.lastIndexOf(" -- @");
+        if (atIdx < 0)
+          return false;
+        const jScenName = tc.$.name.substring(0, atIdx);
         return outlineRx.test(jScenName);
       });
+
+      // If no exact match, try more flexible matching: look for the row index in the name
+      if (queueItemResults.length === 0) {
+        const rowIndexPattern = new RegExp(` -- @${tableIndex}\\.${rowIndex}\\b`);
+        queueItemResults = junitContents.testsuite.testcase.filter(tc => {
+          if (tc.$.classname !== className)
+            return false;
+          // Check if name contains the row index (just the pattern, no strict anchors)
+          if (!rowIndexPattern.test(tc.$.name))
+            return false;
+          // Extract scenario name before " -- @" and check it matches (trim for safety)
+          const atIdx = tc.$.name.lastIndexOf(" -- @");
+          if (atIdx < 0)
+            return false;
+          const jScenName = tc.$.name.substring(0, atIdx).trim();
+          return outlineRx.test(jScenName);
+        });
+      }
+
       if (queueItemResults.length === 0) {
         throw `could not match example row queueItem to junit result, when trying to match with $.classname="${className}", ` +
         `outline pattern "${outlineRx.source}", suffix "${rowSuffix}" in file ${junitFileUri.fsPath}`;
@@ -368,10 +399,16 @@ export async function parseJunitFileAndUpdateTestResults(wkspSettings: Workspace
       continue;
     }
 
-    // normal scenario
-    let queueItemResults = junitContents.testsuite.testcase.filter(tc =>
-      tc.$.classname === className && tc.$.name === scenarioName
-    );
+    // normal scenario (allow for optional trailing whitespace)
+    let queueItemResults = junitContents.testsuite.testcase.filter(tc => {
+      if (tc.$.classname !== className)
+        return false;
+      // Try exact match first, then allow for optional trailing whitespace
+      if (tc.$.name === scenarioName)
+        return true;
+      const rx = new RegExp("^" + escapeRegex(scenarioName) + "\\s*$");
+      return rx.test(tc.$.name);
+    });
 
     // scenario outline
     if (queueItemResults.length === 0) {
@@ -384,7 +421,7 @@ export async function parseJunitFileAndUpdateTestResults(wkspSettings: Workspace
     if (queueItemResults.length === 0 && scenarioName.includes("<")) {
       queueItemResults = junitContents.testsuite.testcase.filter(tc => {
         const jScenName = tc.$.name.substring(0, tc.$.name.lastIndexOf(" -- @"));
-        const rx = new RegExp("^" + escapeRegex(scenarioName).replace(/<[^>]*>/g, ".*") + "$");
+        const rx = new RegExp("^" + escapeRegex(scenarioName).replace(/<[^>]*>/g, ".*") + "\\s*$");
         return tc.$.classname === className && rx.test(jScenName);
       });
     }

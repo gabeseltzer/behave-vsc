@@ -220,14 +220,14 @@ export function getScenarioRunName(scenName: string, isOutline: boolean, example
     const suffix = exampleRow.examplesName
       ? ` -- @${exampleRow.tableIndex}\\.${exampleRow.rowIndex} ${escapedExName}`
       : ` -- @${exampleRow.tableIndex}\\.${exampleRow.rowIndex}`;
-    return "^" + scenarioName + suffix + "$";
+    return "^" + scenarioName + suffix + "\\s*$";
   }
 
   // scenario outline with a <param> in its name
   if (isOutline && scenarioName.includes("<"))
     scenarioName = scenarioName.replace(/<[^>]*>/g, ".*");
 
-  return "^" + scenarioName + (isOutline ? " -- @" : "$");
+  return "^" + scenarioName + (isOutline ? " -- @" : "\\s*$");
 }
 
 
